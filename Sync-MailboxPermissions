@@ -1,0 +1,461 @@
+function Get-ADNestedGroupMembers { 
+<#  
+.SYNOPSIS
+Author: Piotr Lewandowski
+Version: 1.01 (04.08.2015) - added displayname to the output, changed name to samaccountname in case of user objects.
+
+.DESCRIPTION
+Get nested group membership from a given group or a number of groups.
+
+Function enumerates members of a given AD group recursively along with nesting level and parent group information. 
+It also displays if each user account is enabled. 
+When used with an -indent switch, it will display only names, but in a more user-friendly way (sort of a tree view) 
+   
+.EXAMPLE   
+Get-ADNestedGroupMembers "MyGroup" | Export-CSV .\NedstedMembers.csv -NoTypeInformation
+
+.EXAMPLE  
+Get-ADGroup "MyGroup" | Get-ADNestedGroupMembers | ft -autosize
+            
+.EXAMPLE             
+Get-ADNestedGroupMembers "MyGroup" -indent
+ 
+#>
+
+param ( 
+[Parameter(ValuefromPipeline=$true,mandatory=$true)][String] $GroupName, 
+[int] $nesting = -1, 
+[int]$circular = $null, 
+[switch]$indent 
+) 
+    function indent  
+    { 
+    Param($list) 
+        foreach($line in $list) 
+        { 
+        $space = $null 
+         
+            for ($i=0;$i -lt $line.nesting;$i++) 
+            { 
+            $space += "    " 
+            } 
+            $line.name = "$space" + "$($line.name)"
+        } 
+      return $List 
+    } 
+     
+$modules = get-module | select -expand name
+    if ($modules -contains "ActiveDirectory") 
+    { 
+        $table = $null 
+        $nestedmembers = $null 
+        $adgroupname = $null     
+        $nesting++   
+        $ADGroupname = get-adgroup $groupname -properties memberof,members 
+        $memberof = $adgroupname | select -expand memberof 
+        write-verbose "Checking group: $($adgroupname.name)" 
+        if ($adgroupname) 
+        {  
+            if ($circular) 
+            { 
+                $nestedMembers = Get-ADGroupMember -Identity $GroupName -recursive 
+                $circular = $null 
+            } 
+            else 
+            { 
+                $nestedMembers = Get-ADGroupMember -Identity $GroupName | sort objectclass -Descending
+                if (!($nestedmembers))
+                {
+                    $unknown = $ADGroupname | select -expand members
+                    if ($unknown)
+                    {
+                        $nestedmembers=@()
+                        foreach ($member in $unknown)
+                        {
+                        $nestedmembers += get-adobject $member
+                        }
+                    }
+
+                }
+            } 
+ 
+            foreach ($nestedmember in $nestedmembers) 
+            { 
+                $Props = @{Type=$nestedmember.objectclass;Name=$nestedmember.name;DisplayName="";ParentGroup=$ADgroupname.name;Enabled="";Nesting=$nesting;DN=$nestedmember.distinguishedname;Comment=""} 
+                 
+                if ($nestedmember.objectclass -eq "user") 
+                { 
+                    $nestedADMember = get-aduser $nestedmember -properties enabled,displayname 
+                    $table = new-object psobject -property $props 
+                    $table.enabled = $nestedadmember.enabled
+                    $table.name = $nestedadmember.samaccountname
+                    $table.displayname = $nestedadmember.displayname
+                    if ($indent) 
+                    { 
+                    indent $table | select @{N="Name";E={"$($_.name)  ($($_.displayname))"}}
+                    } 
+                    else 
+                    { 
+                    $table | select type,name,displayname,parentgroup,nesting,enabled,dn,comment 
+                    } 
+                } 
+                elseif ($nestedmember.objectclass -eq "group") 
+                {  
+                    $table = new-object psobject -Property $props 
+                     
+                    if ($memberof -contains $nestedmember.distinguishedname) 
+                    { 
+                        $table.comment ="Circular membership" 
+                        $circular = 1 
+                    } 
+                    if ($indent) 
+                    { 
+                    indent $table | select name,comment | %{
+						
+						if ($_.comment -ne "")
+						{
+						[console]::foregroundcolor = "red"
+						write-output "$($_.name) (Circular Membership)"
+						[console]::ResetColor()
+						}
+						else
+						{
+						[console]::foregroundcolor = "yellow"
+						write-output "$($_.name)"
+						[console]::ResetColor()
+						}
+                    }
+					}
+                    else 
+                    { 
+                    $table | select type,name,displayname,parentgroup,nesting,enabled,dn,comment 
+                    } 
+                    if ($indent) 
+                    { 
+                       Get-ADNestedGroupMembers -GroupName $nestedmember.distinguishedName -nesting $nesting -circular $circular -indent 
+                    } 
+                    else  
+                    { 
+                       Get-ADNestedGroupMembers -GroupName $nestedmember.distinguishedName -nesting $nesting -circular $circular 
+                    } 
+              	                  
+               } 
+                else 
+                { 
+                    
+                    if ($nestedmember)
+                    {
+                        $table = new-object psobject -property $props
+                        if ($indent) 
+                        { 
+    	                    indent $table | select name 
+                        } 
+                        else 
+                        { 
+                        $table | select type,name,displayname,parentgroup,nesting,enabled,dn,comment    
+                        } 
+                     }
+                } 
+              
+            } 
+         } 
+    } 
+    else {Write-Warning "Active Directory module is not loaded"}        
+}
+
+Function Write-Log { 
+<# 
+.Synopsis 
+   Write-Log writes a message to a specified log file with the current time stamp. 
+.DESCRIPTION 
+   The Write-Log function is designed to add logging capability to other scripts. 
+   In addition to writing output and/or verbose you can write to a log file for 
+   later debugging. 
+.NOTES 
+   Created by: Jason Wasser @wasserja 
+   Modified: 11/24/2015 09:30:19 AM   
+ 
+   Changelog: 
+    * Code simplification and clarification - thanks to @juneb_get_help 
+    * Added documentation. 
+    * Renamed LogPath parameter to Path to keep it standard - thanks to @JeffHicks 
+    * Revised the Force switch to work as it should - thanks to @JeffHicks 
+ 
+   To Do: 
+    * Add error handling if trying to create a log file in a inaccessible location. 
+    * Add ability to write $Message to $Verbose or $Error pipelines to eliminate 
+      duplicates. 
+.PARAMETER Message 
+   Message is the content that you wish to add to the log file.  
+.PARAMETER Path 
+   The path to the log file to which you would like to write. By default the function will  
+   create the path and file if it does not exist.  
+.PARAMETER Level 
+   Specify the criticality of the log information being written to the log (i.e. Error, Warning, Informational) 
+.PARAMETER NoClobber 
+   Use NoClobber if you do not wish to overwrite an existing file. 
+.EXAMPLE 
+   Write-Log -Message 'Log message'  
+   Writes the message to c:\Logs\PowerShellLog.log. 
+.EXAMPLE 
+   Write-Log -Message 'Restarting Server.' -Path c:\Logs\Scriptoutput.log 
+   Writes the content to the specified log file and creates the path and file specified.  
+.EXAMPLE 
+   Write-Log -Message 'Folder does not exist.' -Path c:\Logs\Script.log -Level Error 
+   Writes the message to the specified log file as an error message, and writes the message to the error pipeline. 
+.LINK 
+   https://gallery.technet.microsoft.com/scriptcenter/Write-Log-PowerShell-999c32d0 
+#> 
+    [CmdletBinding()] 
+    Param 
+    ( 
+        [Parameter(Mandatory=$true, 
+                   ValueFromPipelineByPropertyName=$true)] 
+        [ValidateNotNullOrEmpty()] 
+        [Alias("LogContent")] 
+        [string]$Message, 
+ 
+        [Parameter(Mandatory=$false)] 
+        [Alias('LogPath')] 
+        [string]$Path = "$Logsfolder\Sync-MailboxPermissions.log", 
+         
+        [Parameter(Mandatory=$false)] 
+        [ValidateSet("Error","Warn","Info")] 
+        [string]$Level="Info", 
+         
+        [Parameter(Mandatory=$false)] 
+        [switch]$NoClobber 
+    ) 
+ 
+    Begin 
+    { 
+        # Set VerbosePreference to Continue so that verbose messages are displayed. 
+        $VerbosePreference = 'Continue' 
+    } 
+    Process 
+    { 
+         
+
+        if ((Test-Path $Path)) {
+			$LogSize = (Get-Item -Path $Path).Length/1MB
+			$MaxLogSize = 5
+		}
+
+        # Check for file size of the log. If greater than 5MB, it will create a new one and delete the old.
+        if ((Test-Path $Path) -AND $LogSize -gt $MaxLogSize) {
+            Write-Verbose "Log file $Path already exists and file exceeds maximum file size. Renaming the log and starting fresh."
+            $FileDateSuffix = (get-date).ToString("ddMMyyy-hhmmss")
+            $NewFileName = (gci $path).FullName.Replace('.log',"-$fileDateSuffix.log")
+            Move-Item $Path $NewFileName -Force
+            $NewLogFile = New-Item $Path -Force -ItemType File
+        }
+
+        # If the file already exists and NoClobber was specified, do not write to the log. 
+        if ((Test-Path $Path) -AND $NoClobber) { 
+            Write-Error "Log file $Path already exists, and you specified NoClobber. Either delete the file or specify a different name." 
+            Return 
+            } 
+ 
+        # If attempting to write to a log file in a folder/path that doesn't exist create the file including the path. 
+        elseif (!(Test-Path $Path)) { 
+            Write-Verbose "Creating $Path." 
+            $NewLogFile = New-Item $Path -Force -ItemType File 
+            } 
+ 
+        else { 
+            # Nothing to see here yet. 
+            } 
+ 
+        # Format Date for our Log File 
+        $FormattedDate = Get-Date -Format "yyyy-MM-dd HH:mm:ss" 
+ 
+        # Write message to error, warning, or verbose pipeline and specify $LevelText 
+        switch ($Level) { 
+            'Error' { 
+                Write-Error $Message 
+                $LevelText = 'ERROR:' 
+                } 
+            'Warn' { 
+                Write-Warning $Message 
+                $LevelText = 'WARNING:' 
+                } 
+            'Info' { 
+                Write-Verbose $Message 
+                $LevelText = 'INFO:' 
+                } 
+            } 
+         
+        # Write log entry to $Path 
+        "$FormattedDate $LevelText $Message" | Out-File -FilePath $Path -Append 
+    } 
+    End 
+    { 
+    } 
+}
+
+#Define variables
+
+$GroupsOU = <Distinguished name of OU containing Groups>
+$LogsFolder = <Path to logs folder>
+$EXO_Org = <Exchange Online tenant name>
+$CertThumbprint = <Certificate thumbprint>
+$AppID = <Azure AD Application ID>
+
+#Cleanup old logs
+Write-Log -Message "Executing script" -Level Info
+Write-Log -Message "Removing old logs" -Level Info
+Get-ChildItem $LogsFolder -Recurse -Force -ea 0 | ? {!$_.PsIsContainer -and $_.LastWriteTime -lt (Get-Date).AddDays(-7)} | % {$_ | del -Force}
+
+#Setup
+Import-Module ActiveDirectory
+
+#Disconnect from any Exchange Online sessions
+Write-Log -Message "Disconnecting any existing Exchange sessions" -Level Info
+Disconnect-ExchangeOnline -confirm:$false -ErrorAction SilentlyContinue| Out-Null
+
+#Connect to Exchange Online using decrypted credentials
+Write-Log "Connecting to Exchange Online" -Level Info
+Connect-ExchangeOnline -CertificateThumbprint $CertThumbprint -AppId ”032fbe5b-a3c0-4c6c-a866-e247a93608af” -ShowBanner:$false -Organization $Exo_Org
+
+#Get AD groups for Shared Mailboxes
+Write-Log "Getting AD Groups and Shared Mailboxes"
+$ADGroups = Get-ADGroup -Filter * -SearchBase $GroupsOU 
+$FullAccessADGroups = $ADGroups |where name -like "*FullAccess"
+$SendAsADGroups = $ADGroups |where name -like "*SendAs"
+Write-Log "Total ADGroups = $($ADgroups.Count)" -Level Info
+
+#Get all shared mailboxes from Exchange Online
+Write-Log "Getting Shared Mailboxes" -Level Info
+#$SharedMailboxes = Get-Mailbox -RecipientTypeDetails shared | sort displayname 
+$SharedMailboxes = Get-EXOMailbox -RecipientTypeDetails SharedMailbox | sort displayname 
+
+If ($SharedMailboxes) {
+
+    Write-Log "Total Shared Mailboxes = $(($SharedMailboxes|Measure).Count)" -Level Info
+
+    #Loop through each mailbox and update permissions
+    foreach ($mbx in $SharedMailboxes)
+    {
+        $mbxname = $mbx.displayname
+        If ($mbx.MessageCopyForSentAsEnabled -eq $false ){ 
+            Write-Log "Setting MessageCopyForSentAsEnabled to true " -Level Info 
+            $mbx |Set-Mailbox -MessageCopyForSentAsEnabled $true 
+        }
+        
+        Write-Log "Checking $mbxname mailbox" -Level Info 
+        
+        #Retrieve current Full Access and SendAs Delegates
+        Write-Log "Getting list of SendAs Delegates" -Level Info
+        $SendAsDelegates = ($mbx|Get-RecipientPermission|where {$_.trustee -notlike "NT AUTHORITY\SELF" -and $_.IsInherited -eq $false}).Trustee
+        
+        Write-Log "Getting list of Full Access Delegates" -Level Info
+        $FullAccessDelegates = ($mbx | Get-MailboxPermission | where { ($_.AccessRights -eq "FullAccess") -and ($_.IsInherited -eq $false) -and ($_.User -notlike "NT AUTHORITY\SELF")}).User
+
+        #Try to find the associated AD groups (name of AD group should match mailbox)
+        Write-Log "Getting AD security groups for $mbxname" -Level Info
+        $FullAccessADGroup = $FullAccessADGroups|where name -match "$mbxName-FullAccess"
+        $SendAsADGroup = $SendAsADGroups|where name -match "$mbxName-SendAs"
+        
+        #If group was found, continue
+        If ($FullAccessADGroup) {
+            Write-Log -Message "$($FullAccessADGroup.name) group found." -Level Info
+            Write-Log -Message "Checking Full Access permissions." -Level Info
+
+            #Get all members of Full Access AD group (including any users in nested groups)
+            $FullAccessMembers = Get-ADNestedGroupMembers $FullAccessADGroup |where type -eq "user"
+
+            #Check AD group has members
+            If ($FullAccessMembers) {
+                
+                #Loop through current Full Access delegates and check they are meant to be there
+                Write-Log -Message "Removing invalid Full Access permissions." -Level Info
+                ForEach ($FADelegate in $FullAccessDelegates) {
+                    #Search for delegate in AD
+                    $ADUser = Get-ADUser -filter {UserPrincipalName -eq $FADelegate} 
+                    If ($ADuser) {
+                        #If found, check whether or not they are in the AD group
+                        If ($FullAccessMembers.name -notcontains $ADUser.SamAccountName) {
+                            #If not, remove the permission from the mailbox
+                            Write-Log -Message "`tRemoving Full Access permissions for $FADelegate"  -Level Warn
+                            $mbx | Remove-MailboxPermission -AccessRights fullaccess -User $FADelegate -Confirm:$false | out-null
+                        }
+                    } Else {
+                        #If user was not found in AD, remove permission from mailbox
+                        Write-Log -Message "`t$FADelegate not found in AD. Removing permission" -Level Warn
+                        $mbx | Remove-MailboxPermission -AccessRights fullaccess -User $FADelegate -Confirm:$false | out-null
+                    }
+                }
+
+                #Add Missing Full Access Permission
+                Write-Log -Message "Adding new Full Access permissions."
+
+                #Loop through each member of AD group and add access to mailbox
+                ForEach ($FAmember in $FullAccessMembers) {
+                    $UserEmail = (Get-ADUser $FAmember.name -prop mail).mail
+                    #If permission does not exist, add it
+                    If ($FullAccessDelegates -notcontains $UserEmail) {
+                        Write-Log -Message "`tGranting $UserEmail Full Access permissions" -Level Warn
+                        $mbx | Add-MailboxPermission -AccessRights fullaccess -User $UserEmail -Confirm:$false -AutoMapping:$true | out-null
+                    } Else {
+                        #Otherwise just log that user already has access
+                        Write-Log -Message "`t$UserEmail already has Full Access permissions" -Level Info
+                    }
+                }
+            }
+        } Else {
+            Write-Log -Message "No FullAccess AD group found for $mbxname!" -Level Error
+        }
+ 
+        #Add Missing SendAs Permission
+
+        If ($SendAsADGroup) {
+            #If SendAs AD group was found, get the group membership.
+            $SendAsMembers = Get-ADNestedGroupMembers $SendAsADGroup |where type -eq "user"
+
+            Write-Log -Message "$($SendAsADGroup.name) group found." -Level Info
+            Write-Log -Message "Checking SendAs permissions" -Level Info
+            If ($SendAsMembers) {
+
+                #Remove invalid SendAs Permissions
+                Write-Log -Message "Removing invalid SendAs permissions." -Level Info
+                #Loop through each SendAs delegate and check if the permission is valid
+                ForEach ($SADelegate in $SendAsDelegates) {
+                    #Search for the delegate in AD
+                    $ADUser = Get-ADUser -filter {UserPrincipalName -eq $SADelegate}
+                    If ($ADuser) {
+                        #If found, check that they are in the SendAs AD group membership
+                        If ($SendAsMembers.name -notcontains $ADUser.SamAccountName) {
+                            #If not, remove permission
+                            Write-Log -Message "`tRemoving $SADelegate from SendAs permissions" -Level Warn
+                            $mbx | Remove-RecipientPermission -AccessRights SendAs -Trustee $SADelegate -Confirm:$false | Out-Null
+                        }
+                    } Else {
+                        #If user was not found in AD, remove permission
+                        Write-Log -Message "`t$SADelegate not found in AD. Removing permissions" -Level Warn
+                        $mbx | Remove-RecipientPermission -AccessRights SendAs -Trustee $SADelegate -Confirm:$false | Out-Null
+                    }
+                }
+
+                Write-Log -Message "Adding new SendAs permissions" -Level Info
+                #Loop through each AD group member and add any new permissions
+                ForEach ($SAmember in $SendAsMembers) {
+                    $UserEmail = (Get-ADUser $SAmember.name -prop mail).mail
+                    #If the permission is missing, add it
+                    If ($SendAsDelegates -notcontains $UserEmail) {
+                        Write-Log -Message "`tGranting SendAs permissions for $UserEmail" -Level Warn
+                        $mbx | Add-RecipientPermission -AccessRights SendAs -Trustee $UserEmail -Confirm:$false | Out-Null
+                    } Else {
+                        #Otherwise just log that permission is OK
+                        Write-Log -Message "`t$UserEmail already has SendAs permissions" -Level Info
+                    }
+                }
+            }
+        }  Else {
+            Write-Log -Message "No SendAs AD group found for $mbxname!" -Level Error
+        }
+    } 
+} Else {
+    Write-Log "No Shared Mailboxes found." -Level Error
+}
+
+Write-Log "Finished syncing permissions." -Level Info
